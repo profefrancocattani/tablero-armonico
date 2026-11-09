@@ -2451,15 +2451,16 @@ function voiceChord(ch){
   const pcs=[...new Set(ch.tones.map(t=>(ch.rootPc+t.s)%12))];
   if(ch.bassPc!=null&&pcs.indexOf(ch.bassPc)<0)pcs.push(ch.bassPc);
   const n=pcs.length;let best=null,bestSc=1e9;
+  const reg=(PRESETS[S.preset]&&PRESETS[S.preset].reg)||0;   // registro propio del sonido (la guitarra suena más grave)
   for(let r=0;r<n;r++){
     const rot=pcs.slice(r).concat(pcs.slice(0,r));
-    for(let start=50;start<=65;start++){
+    for(let start=50+reg;start<=65+reg;start++){
       if(start%12!==rot[0])continue;
       const notes=[start];
       for(let i=1;i<n;i++){let m=notes[i-1]+1;while(m%12!==rot[i])m++;notes.push(m)}
       if(notes[n-1]>81)continue;
       const mean=notes.reduce((a,b)=>a+b,0)/n;
-      let sc=Math.abs(mean-63)*0.6;
+      let sc=Math.abs(mean-63-reg)*0.6;
       if(lastVoicing){
         for(const x of notes)sc+=Math.min(...lastVoicing.map(p=>Math.abs(p-x)));
         for(const p of lastVoicing)sc+=0.5*Math.min(...notes.map(x=>Math.abs(p-x)));
@@ -2482,6 +2483,17 @@ const PRESETS={
       {car:1,mod:1,index:1.15,decay:.5,floor:.12,level:1,velIdx:.9},
       {car:1,mod:14,index:.32,decay:.03,floor:0,level:.38,velIdx:1.6}],
     a:.002,d:2.6,s:.12,r:.3,cutoff:5200,reverb:.2,gain:.19,trem:true,keyDecay:true},
+  /* Guitarra de jazz: archtop con el micrófono del mango y el tono algo cerrado.
+     harm = espectro propio (fundamental fuerte, armónicos que caen rápido) → cálida.
+     pick = chasquido corto de púa filtrado y fenv breve → cada nota se entiende (clara).
+     pitchDrop = la cuerda arranca unos cents arriba y se asienta, como al pulsarla.
+     eq = cuerpo en graves medios, un poco de presencia y agudos recortados.
+     reg baja el registro de los acordes, como suena una guitarra. */
+  jazz:{name:'Guitarra de jazz',
+    osc:[{type:'custom',harm:[1,.62,.36,.2,.12,.075,.045,.028,.017,.01],gain:.95}],
+    pick:{freq:2300,q:.8,level:.07,decay:.006},pitchDrop:{cents:8,tc:.035},
+    eq:[{type:'peaking',f:190,q:.9,gain:3},{type:'peaking',f:1250,q:1.1,gain:1.5},{type:'highshelf',f:3600,gain:-7}],
+    a:.003,d:2.3,s:.03,r:.15,cutoff:1500,fenv:2400,fdecay:.07,q:.5,velCut:.6,reverb:.16,gain:.22,keyDecay:true,reg:-3},
   pad:{name:'Pad cálido',osc:[{type:'sawtooth',detune:-8,gain:.5},{type:'sawtooth',detune:8,gain:.5},{type:'triangle',mult:.5,gain:.35}],a:.3,d:.8,s:.75,r:1.3,cutoff:1300,fenv:900,fdecay:.6,q:.6,reverb:.42,gain:.085},
   pluck:{name:'Guitarra sintética',osc:[{type:'triangle',gain:.7},{type:'sawtooth',detune:4,gain:.3}],a:.002,d:1.3,s:0,r:.35,cutoff:650,fenv:4200,fdecay:.12,q:1.1,reverb:.3,gain:.24},
   organ:{name:'Órgano suave',osc:[{type:'sine',gain:.6},{type:'sine',mult:2,gain:.3},{type:'sine',mult:3,gain:.14},{type:'sine',mult:4,gain:.07}],a:.015,d:.2,s:.9,r:.18,cutoff:5000,reverb:.32,gain:.15},
@@ -2526,6 +2538,16 @@ function applyVolume(){if(master)master.gain.setTargetAtTime(Math.pow(S.vol/100,
 function applyReverb(){if(!ctx)return;const p=PRESETS[S.preset];wetG.gain.value=p.reverb;dryG.gain.value=1-p.reverb*.35}
 
 const voices=[];
+const waveCache={};
+function waveFor(preset,i,harm){
+  const key=preset+':'+i;
+  if(!waveCache[key]){
+    const real=new Float32Array(harm.length+1),imag=new Float32Array(harm.length+1);
+    harm.forEach((a,k)=>{imag[k+1]=a});
+    waveCache[key]=ctx.createPeriodicWave(real,imag);
+  }
+  return waveCache[key];
+}
 function noteOn(midi,t,vel=1,dur=null,opts=null){
   const p=PRESETS[S.preset];
   const f=440*Math.pow(2,(midi-69)/12);
@@ -2546,12 +2568,17 @@ function noteOn(midi,t,vel=1,dur=null,opts=null){
     const cg=ctx.createGain();cg.gain.value=q.level;
     mod.connect(mg);mg.connect(car.frequency);car.connect(cg);cg.connect(filt);oscs.push(car,mod);
   });
-  (p.osc||[]).forEach(o=>{
-    const os=ctx.createOscillator();os.type=o.type;os.frequency.value=f*(o.mult||1);os.detune.value=o.detune||0;
+  (p.osc||[]).forEach((o,i)=>{
+    const os=ctx.createOscillator();
+    if(o.type==='custom')os.setPeriodicWave(waveFor(S.preset,i,o.harm));else os.type=o.type;
+    os.frequency.value=f*(o.mult||1);
+    const det=o.detune||0;
+    if(p.pitchDrop){os.detune.setValueAtTime(det+p.pitchDrop.cents,t);os.detune.setTargetAtTime(det,t,p.pitchDrop.tc)}
+    else os.detune.value=det;
     const og=ctx.createGain();og.gain.value=o.gain;os.connect(og);og.connect(filt);oscs.push(os);
   });
   const track=Math.sqrt(f/262);
-  const cutMul=(opts&&opts.cut)||1;
+  const cutMul=((opts&&opts.cut)||1)*(1+(p.velCut||0)*(Math.min(vel,1.2)-.75));
   const base=Math.min(16000,p.cutoff*track*cutMul);
   if(p.fenv){filt.frequency.setValueAtTime(Math.min(18000,base+p.fenv*track*cutMul),t);filt.frequency.setTargetAtTime(base,t+p.a,p.fdecay)}
   else filt.frequency.setValueAtTime(base,t);
@@ -2559,7 +2586,15 @@ function noteOn(midi,t,vel=1,dur=null,opts=null){
   const att=Math.min(p.a,(opts&&opts.att)||p.a);
   const dec=p.keyDecay?p.d*Math.max(.45,Math.min(1.5,Math.pow(262/f,.4))):p.d;
   g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(peak,t+att);g.gain.setTargetAtTime(peak*p.s,t+att,dec/3);
-  filt.connect(g);g.connect(p.trem&&tremIn?tremIn:bus);
+  let tail=filt;
+  (p.eq||[]).forEach(e=>{const b=ctx.createBiquadFilter();b.type=e.type;b.frequency.value=e.f;if(e.q)b.Q.value=e.q;b.gain.value=e.gain||0;tail.connect(b);tail=b});
+  tail.connect(g);g.connect(p.trem&&tremIn?tremIn:bus);
+  if(p.pick&&noiseBuf){
+    const src=ctx.createBufferSource();src.buffer=noiseBuf;
+    const bp=ctx.createBiquadFilter();bp.type='bandpass';bp.frequency.value=p.pick.freq;bp.Q.value=p.pick.q;
+    const pg=ctx.createGain();pg.gain.setValueAtTime(p.pick.level*Math.min(vel,1.2),t);pg.gain.setTargetAtTime(0,t,p.pick.decay);
+    src.connect(bp);bp.connect(pg);pg.connect(g);src.start(t);src.stop(t+.06);
+  }
   oscs.forEach(o=>o.start(t));
   const relTc=(opts&&opts.rel)||p.r/4;
   const v={g,oscs,p,released:false,
