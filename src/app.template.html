@@ -559,6 +559,14 @@ function bassOf(ch){let b=(ch.bassPc!=null?ch.bassPc:ch.rootPc)+36;if(b<40)b+=12
 /* ---------- Sonidos ---------- */
 const PRESETS={
   keys:{name:'Piano eléctrico',fm:{ratio:1,index:1.8,decay:.35},osc:[{type:'sine',mult:2,gain:.12}],a:.004,d:1.8,s:.22,r:.5,cutoff:6000,reverb:.28,gain:.2},
+  /* Rhodes: dos pares FM. Cuerpo (portadora y moduladora 1:1, el brillo baja en medio segundo)
+     y púa (moduladora 14:1 que suena sólo en el ataque: el "clank" metálico del martillo).
+     velIdx hace que tocar más fuerte dé más brillo; keyDecay acorta la cola en los agudos;
+     trem manda la voz al trémolo estéreo compartido. */
+  rhodes:{name:'Rhodes',pairs:[
+      {car:1,mod:1,index:1.15,decay:.5,floor:.12,level:1,velIdx:.9},
+      {car:1,mod:14,index:.32,decay:.03,floor:0,level:.38,velIdx:1.6}],
+    a:.002,d:2.6,s:.12,r:.3,cutoff:5200,reverb:.2,gain:.19,trem:true,keyDecay:true},
   pad:{name:'Pad cálido',osc:[{type:'sawtooth',detune:-8,gain:.5},{type:'sawtooth',detune:8,gain:.5},{type:'triangle',mult:.5,gain:.35}],a:.3,d:.8,s:.75,r:1.3,cutoff:1300,fenv:900,fdecay:.6,q:.6,reverb:.42,gain:.085},
   pluck:{name:'Guitarra sintética',osc:[{type:'triangle',gain:.7},{type:'sawtooth',detune:4,gain:.3}],a:.002,d:1.3,s:0,r:.35,cutoff:650,fenv:4200,fdecay:.12,q:1.1,reverb:.3,gain:.24},
   organ:{name:'Órgano suave',osc:[{type:'sine',gain:.6},{type:'sine',mult:2,gain:.3},{type:'sine',mult:3,gain:.14},{type:'sine',mult:4,gain:.07}],a:.015,d:.2,s:.9,r:.18,cutoff:5000,reverb:.32,gain:.15},
@@ -566,7 +574,7 @@ const PRESETS={
   glass:{name:'Vidrio',fm:{ratio:3.01,index:1.1,decay:.6},a:.003,d:2.6,s:0,r:1,cutoff:9000,reverb:.45,gain:.17}
 };
 
-let ctx=null,bus,dryG,wetG,master,conv,comp,analyser=null,noiseBuf=null;
+let ctx=null,bus,dryG,wetG,master,conv,comp,analyser=null,noiseBuf=null,tremIn=null;
 function makeImpulse(sec){
   const len=Math.floor(ctx.sampleRate*sec),buf=ctx.createBuffer(2,len,ctx.sampleRate);
   for(let c=0;c<2;c++){const d=buf.getChannelData(c);for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.6)}
@@ -584,6 +592,16 @@ function initAudio(){
   analyser=ctx.createAnalyser();analyser.fftSize=2048;analyser.smoothingTimeConstant=0;master.connect(analyser);
   const nl=Math.floor(ctx.sampleRate*.09);noiseBuf=ctx.createBuffer(1,nl,ctx.sampleRate);
   const nd=noiseBuf.getChannelData(0);for(let i=0;i<nl;i++)nd[i]=Math.random()*2-1;
+  // Trémolo estéreo compartido (un solo LFO para que todas las notas del acorde se muevan juntas)
+  tremIn=ctx.createGain();
+  const tremAmp=ctx.createGain();tremAmp.gain.value=.86;
+  const lfo=ctx.createOscillator();lfo.type='sine';lfo.frequency.value=4.4;
+  const ampD=ctx.createGain();ampD.gain.value=.14;lfo.connect(ampD);ampD.connect(tremAmp.gain);
+  if(ctx.createStereoPanner){
+    const pan=ctx.createStereoPanner(),panD=ctx.createGain();panD.gain.value=.55;
+    lfo.connect(panD);panD.connect(pan.pan);tremIn.connect(pan);pan.connect(tremAmp);
+  }else tremIn.connect(tremAmp);
+  tremAmp.connect(bus);lfo.start();
   applyVolume();applyReverb();
   document.getElementById('hint').hidden=true;
   requestWake();
@@ -605,6 +623,14 @@ function noteOn(midi,t,vel=1,dur=null,opts=null){
     const mg=ctx.createGain();mg.gain.setValueAtTime(f*p.fm.index,t);mg.gain.setTargetAtTime(f*p.fm.index*.12,t,p.fm.decay);
     mod.connect(mg);mg.connect(car.frequency);car.connect(filt);oscs.push(car,mod);
   }
+  (p.pairs||[]).forEach(q=>{
+    const car=ctx.createOscillator();car.type='sine';car.frequency.value=f*q.car;
+    const mod=ctx.createOscillator();mod.type='sine';mod.frequency.value=f*q.mod;
+    const dev=f*q.mod*Math.max(0,q.index*(1+(q.velIdx||0)*(Math.min(vel,1.2)-.75)));
+    const mg=ctx.createGain();mg.gain.setValueAtTime(dev,t);mg.gain.setTargetAtTime(dev*(q.floor||0),t,q.decay);
+    const cg=ctx.createGain();cg.gain.value=q.level;
+    mod.connect(mg);mg.connect(car.frequency);car.connect(cg);cg.connect(filt);oscs.push(car,mod);
+  });
   (p.osc||[]).forEach(o=>{
     const os=ctx.createOscillator();os.type=o.type;os.frequency.value=f*(o.mult||1);os.detune.value=o.detune||0;
     const og=ctx.createGain();og.gain.value=o.gain;os.connect(og);og.connect(filt);oscs.push(os);
@@ -616,8 +642,9 @@ function noteOn(midi,t,vel=1,dur=null,opts=null){
   else filt.frequency.setValueAtTime(base,t);
   const peak=p.gain*vel;
   const att=Math.min(p.a,(opts&&opts.att)||p.a);
-  g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(peak,t+att);g.gain.setTargetAtTime(peak*p.s,t+att,p.d/3);
-  filt.connect(g);g.connect(bus);
+  const dec=p.keyDecay?p.d*Math.max(.45,Math.min(1.5,Math.pow(262/f,.4))):p.d;
+  g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(peak,t+att);g.gain.setTargetAtTime(peak*p.s,t+att,dec/3);
+  filt.connect(g);g.connect(p.trem&&tremIn?tremIn:bus);
   oscs.forEach(o=>o.start(t));
   const relTc=(opts&&opts.rel)||p.r/4;
   const v={g,oscs,p,released:false,
