@@ -1,0 +1,49 @@
+/* visuals.css — efectos visuales de Tablero Armónico (generado desde visuals.js) */
+:root{--vfx-css:1}
+
+/* Fondo reactivo detrás de toda la página */
+.vfx-bg{position:fixed;inset:0;width:100%;height:100%;z-index:0;pointer-events:none;display:block}
+.app{position:relative;z-index:1}
+
+/* Osciloscopio en la pantalla, debajo de las notas */
+.vfx-osc{display:block;width:100%;height:44px;margin-top:10px;pointer-events:none}
+
+/* Chispas sobre el teclado: viaja con el scroll horizontal de .kbwrap */
+.kbwrap{position:relative}
+.vfx-kb{position:absolute;left:0;top:0;z-index:2;pointer-events:none;display:block}
+
+/* Ripple en pads */
+.pad{overflow:hidden}
+.pad::after{content:"";position:absolute;left:var(--rx,50%);top:var(--ry,50%);
+  width:var(--rd,240px);height:var(--rd,240px);margin-left:calc(var(--rd,240px) / -2);margin-top:calc(var(--rd,240px) / -2);
+  border-radius:50%;background:color-mix(in oklab,#fff 62%,var(--fn));opacity:0;transform:scale(0);pointer-events:none}
+.pad.vfx-rip::after{animation:vfx-ripple .6s cubic-bezier(.2,.7,.2,1) forwards}
+@keyframes vfx-ripple{0%{opacity:.6;transform:scale(0)}100%{opacity:0;transform:scale(1)}}
+
+/* Pulso de compás en el borde de la pantalla */
+.screen.vfx-beat{animation:vfx-flash .34s ease-out}
+.screen.vfx-down{animation:vfx-flash-down .5s ease-out}
+@keyframes vfx-flash{
+  0%{box-shadow:0 0 0 1px var(--cur),0 0 18px color-mix(in oklab,var(--cur) 55%,transparent)}
+  100%{box-shadow:0 0 0 0 transparent,0 0 0 transparent}}
+@keyframes vfx-flash-down{
+  0%{box-shadow:0 0 0 3px var(--cur),0 0 42px color-mix(in oklab,var(--cur) 80%,transparent)}
+  100%{box-shadow:0 0 0 0 transparent,0 0 0 transparent}}
+.dot.lit.vfx-pulse{animation:vfx-dot .3s ease-out}
+@keyframes vfx-dot{0%{transform:scale(2.1)}100%{transform:scale(1)}}
+
+/* Modo escenario: todo atenuado salvo pantalla y pads */
+body.stage .top,body.stage .sechead,body.stage .play,body.stage .help{opacity:.28;filter:saturate(.4);transition:opacity .4s,filter .4s}
+body.stage .mods{opacity:.5;transition:opacity .4s}
+body.stage .top:hover,body.stage .top:focus-within,body.stage .play:hover,body.stage .play:focus-within,
+body.stage .mods:hover,body.stage .mods:focus-within,body.stage .help:hover{opacity:1;filter:none}
+body.stage .screen{box-shadow:0 0 0 1px color-mix(in oklab,var(--cur) 40%,transparent),0 0 36px color-mix(in oklab,var(--cur) 22%,transparent)}
+
+/* Movimiento reducido: ripple sin escala, puntos sin pulso */
+.vfx-reduced .pad.vfx-rip::after{animation:vfx-ripple-flat .22s ease-out forwards}
+.vfx-reduced .dot.lit.vfx-pulse{animation:none}
+@keyframes vfx-ripple-flat{0%{opacity:.35;transform:scale(1)}100%{opacity:0;transform:scale(1)}}
+@media (prefers-reduced-motion: reduce){
+  .pad.vfx-rip::after{animation:vfx-ripple-flat .22s ease-out forwards}
+  .dot.lit.vfx-pulse{animation:none}
+}
